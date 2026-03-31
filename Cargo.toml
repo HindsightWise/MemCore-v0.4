@@ -1,0 +1,25 @@
+[package]
+name = "memcore"
+version = "0.4.0"
+edition = "2021"
+
+[lib]
+name = "memcore"
+crate-type = ["cdylib"] # Compiles as a dynamic C-extension for Python
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.7", features = ["v4", "serde"] }
+chrono = { version = "=0.4.34", features = ["serde"] }
+half = { version = "2.3", features = ["serde"] } # f16 for LanceDB RAM optimization
+rhai = { version = "1.17", features = ["sync"] } # Microsecond embedded scripting for dynamic constraints
+
+kuzu = "0.3.1"
+lancedb = "0.4.5"
+arrow = "50.0.0"
+arrow-array = "50.0.0"
+arrow-schema = "50.0.0"
+tokio = { version = "1.36", features = ["rt-multi-thread"] }
+dirs = "5.0.1"

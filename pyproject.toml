@@ -1,0 +1,11 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "memcore"
+version = "0.4.0"
+dependencies = [
+    "mcp>=1.0.0",
+    "fastmcp>=0.1.0"
+]

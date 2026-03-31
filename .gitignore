@@ -1,0 +1,14 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Python
+/venv/
+__pycache__/
+*.pyc
+
+# Local Data Storage
+.hermes_data/
+.memcore_data/
+*.lance
+kuzu_graph/
