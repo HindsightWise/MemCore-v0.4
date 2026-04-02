@@ -8,6 +8,7 @@ use kuzu::{Database, Connection as KuzuConnection, SystemConfig};
 
 use arrow_array::{RecordBatch, StringArray, Float32Array, FixedSizeListArray, Array, RecordBatchIterator};
 use arrow_schema::{Schema, Field, DataType};
+use futures::stream::StreamExt;
 
 pub struct StorageController {
     rt: Runtime,
@@ -41,15 +42,21 @@ impl StorageController {
                 .map_err(|e| format!("Kuzu connection failed: {:?}", e))?;
             
             // Try to create the Node schema if it doesn't exist
-            let _ = conn.query("CREATE NODE TABLE Memory (id STRING, agent_id STRING, text STRING, PRIMARY KEY (id))");
+            let _ = conn.query("CREATE NODE TABLE Memory (id STRING, agent_id STRING, text STRING, pointer STRING, valence DOUBLE, urgency STRING, PRIMARY KEY (id))");
             
-            // Sanitize query manually (in production we bind parameters properly)
-            let safe_text = entry.text.replace("'", "''");
-            let safe_agent = entry.agent_id.replace("'", "''");
+            // Escape backslashes first, then single quotes with a backslash to satisfy Kuzu Cypher parser
+            let safe_text = entry.text.replace("\\", "\\\\").replace("'", "\\'");
+            let safe_agent = entry.agent_id.replace("\\", "\\\\").replace("'", "\\'");
+            
+            let pointer = entry.metadata.get("pointer").and_then(|v| v.as_str()).unwrap_or("");
+            let valence = entry.metadata.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let urgency = entry.metadata.get("urgency").and_then(|v| v.as_str()).unwrap_or("Low");
+            
+            let safe_pointer = pointer.replace("\\", "\\\\").replace("'", "\\'");
             
             let query = format!(
-                "CREATE (m:Memory {{id: '{}', agent_id: '{}', text: '{}'}})", 
-                entry.id, safe_agent, safe_text
+                "CREATE (m:Memory {{id: '{}', agent_id: '{}', text: '{}', pointer: '{}', valence: {}, urgency: '{}'}})", 
+                entry.id, safe_agent, safe_text, safe_pointer, valence, urgency
             );
             
             conn.query(&query).map_err(|e| format!("Kuzu Write failed: {:?}", e))?;
@@ -111,5 +118,49 @@ impl StorageController {
         }
         
         Ok(())
+    }
+
+    pub fn search_vector(&self, embedding: Vec<f32>, limit: usize) -> Result<String, String> {
+        let lance_path = format!("{}/vectors.lance", self.db_dir);
+        self.rt.block_on(async {
+            let connection = connect(&lance_path).execute().await
+                .map_err(|e| format!("LanceDB connect error: {}", e))?;
+            
+            let table = connection.open_table("memories").execute().await
+                .map_err(|e| format!("LanceDB open table error: {}", e))?;
+            
+            let mut stream = table.search(embedding.as_slice())
+                .limit(limit)
+                .execute_stream().await
+                .map_err(|e| format!("LanceDB search error: {}", e))?;
+                
+            let mut batches: Vec<RecordBatch> = vec![];
+            while let Some(batch_res) = stream.next().await {
+                batches.push(batch_res.map_err(|e| format!("Stream error: {}", e))?);
+            }
+                
+            // Convert to a pretty text table that the LLM can instantly read
+            let out = arrow::util::pretty::pretty_format_batches(&batches)
+                .map_err(|e| format!("Arrow format error: {}", e))?;
+            Ok(out.to_string())
+        })
+    }
+
+    pub fn traverse_graph(&self, cypher: &str) -> Result<String, String> {
+        let kuzu_path = format!("{}/kuzu_graph", self.db_dir);
+        let db = Database::new(&kuzu_path, SystemConfig::default())
+            .map_err(|e| format!("Kuzu DB open failed: {:?}", e))?;
+        let conn = KuzuConnection::new(&db)
+            .map_err(|e| format!("Kuzu connection failed: {:?}", e))?;
+            
+        let result = conn.query(&cypher).map_err(|e| format!("Kuzu Query failed: {:?}", e))?;
+        
+        // Output simple stringification for LLM parsing
+        let mut rows = vec![];
+        for row in result {
+            rows.push(format!("{:?}", row));
+        }
+        
+        Ok(rows.join("\n"))
     }
 }

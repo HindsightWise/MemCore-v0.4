@@ -29,7 +29,8 @@ impl MemCoreEngine {
 
     fn store(
         &mut self, agent_id: String, text: String, skill_tuple_json: String, 
-        dnc_obs_json: String, temperature: f32, embedding_json: Option<String>
+        dnc_obs_json: String, temperature: f32, embedding_json: Option<String>,
+        metadata_json: Option<String>
     ) -> PyResult<String> {
         let skill_tuple: SkillTuple = serde_json::from_str(&skill_tuple_json).unwrap();
         let obs: DncObservation = serde_json::from_str(&dnc_obs_json).unwrap();
@@ -43,11 +44,16 @@ impl MemCoreEngine {
         if let Err(e) = self.dnc.evaluate(&obs, temperature) {
             return Err(PyValueError::new_err(format!("[DNC REJECTION] {}", e)));
         }
+        
+        let metadata = match metadata_json {
+            Some(j) => serde_json::from_str(&j).unwrap_or(serde_json::json!({})),
+            None => serde_json::json!({})
+        };
 
         let entry = MemoryEntry {
             id: Uuid::new_v4(), timestamp: Utc::now(), agent_id, text,
             embedding, kg_node_id: None, skill_tuple,
-            metadata: serde_json::json!({}), version: 1,
+            metadata, version: 1,
         };
 
         // 2. Layer 1 Semantic Legislator S={T,O,C} Validation
@@ -60,6 +66,21 @@ impl MemCoreEngine {
              return Err(PyValueError::new_err(format!("[STORAGE REJECTION] {}", e)));
         }
         Ok(format!("Memory {} validated and committed.", entry.id))
+    }
+
+    fn query_semantic_memory(&mut self, embedding_json: String, limit: usize) -> PyResult<String> {
+        let embedding: Vec<f32> = serde_json::from_str(&embedding_json).unwrap_or(vec![]);
+        match self.storage.search_vector(embedding, limit) {
+            Ok(res) => Ok(res),
+            Err(e) => Err(PyValueError::new_err(format!("[SEARCH ERROR] {}", e)))
+        }
+    }
+
+    fn traverse_knowledge_graph(&mut self, cypher: String) -> PyResult<String> {
+        match self.storage.traverse_graph(&cypher) {
+            Ok(res) => Ok(res),
+            Err(e) => Err(PyValueError::new_err(format!("[GRAPH ERROR] {}", e)))
+        }
     }
 }
 

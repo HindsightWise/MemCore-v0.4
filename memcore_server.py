@@ -2,8 +2,18 @@ import json
 import logging
 from mcp.server.fastmcp import FastMCP
 from memcore import MemCoreEngine # Our compiled Rust library
+import threading
+import asyncio
+from consolidation_worker import consolidation_loop
 
-logging.basicConfig(level=logging.INFO)
+import os
+log_file = os.path.expanduser("~/.hermes/memcore.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=log_file,
+    filemode='a'
+)
 logger = logging.getLogger("memcore-mcp")
 
 try:
@@ -75,6 +85,58 @@ def commit_memory(
         logger.warning(f"Memory rejected: {error_msg}")
         return f"[HARNESS REJECTION] {error_msg}\nAction Required: Re-evaluate your reasoning."
 
+@mcp.tool()
+def query_semantic_memory(query_text: str, limit: int = 5) -> str:
+    """
+    Search your memories via Approximate Nearest Neighbor vector distance.
+    The Rust physics engine will return exact memory strings matching your query.
+    """
+    if embedder is None:
+        return "[ERROR] sentence-transformers not loaded. Cannot generate embeddings."
+    
+    try:
+        raw_emb = embedder.encode(query_text).tolist()
+        result = engine.query_semantic_memory(json.dumps(raw_emb), limit)
+        return f"[SEARCH RESULTS]\n{result}"
+    except Exception as e:
+        return f"[SEARCH FAILED] {str(e)}"
+
+@mcp.tool()
+def traverse_knowledge_graph(cypher_query: str) -> str:
+    """
+    Direct read-access to the Kùzu property graph for structural correlation finding.
+    Write a Cypher query (e.g., 'MATCH (m:Memory) RETURN m LIMIT 5').
+    """
+    try:
+        result = engine.traverse_knowledge_graph(cypher_query)
+        if not result.strip():
+            return "[GRAPH] Query executed successfully, but returned zero rows."
+        return f"[GRAPH RESULTS]\n{result}"
+    except Exception as e:
+        return f"[GRAPH QUERY FAILED] {str(e)}"
+
+@mcp.resource("memory://core_index")
+def read_core_index() -> str:
+    """Read the Layer 1 Cognitive Index of all critical pointers."""
+    try:
+        # We query the Kùzu graph for pointers that are either Critical urgency or have a negative Valence score
+        query = "MATCH (m:Memory) WHERE m.urgency = 'Critical' OR m.valence <= -0.5 RETURN m.pointer"
+        result = engine.traverse_knowledge_graph(query)
+        if not result.strip():
+            return "Core Index is currently empty."
+        return result
+    except Exception as e:
+        return f"[ERROR reading Core Index] {str(e)}"
+
+def start_background_loop(engine_ref):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(consolidation_loop(engine_ref))
+
 if __name__ == "__main__":
+    logger.info("Starting AutoDream Background Daemon...")
+    worker = threading.Thread(target=start_background_loop, args=(engine,), daemon=True)
+    worker.start()
+    
     logger.info("MemCore v0.4 MCP Server active. Awaiting connections...")
     mcp.run()
